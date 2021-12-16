@@ -3,9 +3,7 @@ target
 
 # Data folder
 data
-
-# Misc
-.env
+# .env
 .env.template
 .gitattributes
 .gitignore
@@ -34,7 +32,4 @@ docker/**
 !docker/start.sh
 
 # Web vault
-web-vault
-
-# Vaultwarden Resources
-resources
+# web-vault
