@@ -24,7 +24,7 @@
 #     $ docker image inspect --format "{{.RepoTags}}" vaultwarden/web-vault@sha256:8e8405d252bb6ecc7d59d90e9ba9dde09f35c1b6858371274c67c3e0a6f14a80
 #     [vaultwarden/web-vault:v2022.10.0]
 #
-FROM vaultwarden/web-vault@sha256:8e8405d252bb6ecc7d59d90e9ba9dde09f35c1b6858371274c67c3e0a6f14a80 as vault
+# FROM vaultwarden/web-vault@sha256:0e8daf80abb73ebca69d1971847450d24da45a74a525fd643246ee1dfa02108b as vault
 
 ########################## BUILD IMAGE  ##########################
 FROM rust:1.64-bullseye as build
@@ -114,7 +114,9 @@ EXPOSE 3012
 # Copies the files from the context (Rocket.toml file and web-vault)
 # and the binary from the "build" stage to the current stage
 WORKDIR /
-COPY --from=vault /web-vault ./web-vault
+COPY Rocket.toml .
+# COPY --from=vault /web-vault ./web-vault
+COPY ./web-vault/build ./web-vault
 COPY --from=build /app/target/release/vaultwarden .
 
 COPY docker/healthcheck.sh /healthcheck.sh
