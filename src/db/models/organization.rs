@@ -279,7 +279,7 @@ impl Organization {
         }}
     }
 
-    pub fn find_by_identifier(identifier: &str, conn: &DbConn) -> Option<Self> {
+    pub async fn find_by_identifier(identifier: &str, conn: &DbConn) -> Option<Self> {
         db_run! { conn: {
             organizations::table
                 .filter(organizations::identifier.eq(identifier))
