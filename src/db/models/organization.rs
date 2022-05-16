@@ -288,7 +288,7 @@ impl Organization {
         }}
     }
 
-    pub fn get_all(conn: &DbConn) -> Vec<Self> {
+    pub async fn get_all(conn: &DbConn) -> Vec<Self> {
         db_run! { conn: {
             organizations::table.load::<OrganizationDb>(conn).expect("Error loading organizations").from_db()
         }}
