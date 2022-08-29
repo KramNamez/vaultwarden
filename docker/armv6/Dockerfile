@@ -123,15 +123,11 @@ RUN mkdir /data \
     openssl \
     ca-certificates \
     curl \
+    dumb-init \
     libmariadb-dev-compat \
     libpq5 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# In the Balena Bullseye images for armv6/rpi-debian there is a missing symlink.
-# This symlink was there in the buster images, and for some reason this is needed.
-# hadolint ignore=DL3059
-RUN ln -v -s /lib/ld-linux-armhf.so.3 /lib/ld-linux.so.3
 
 # hadolint ignore=DL3059
 RUN [ "cross-build-end" ]
@@ -151,4 +147,10 @@ COPY docker/start.sh /start.sh
 
 HEALTHCHECK --interval=60s --timeout=10s CMD ["/healthcheck.sh"]
 
+# Configures the startup!
+# We should be able to remove the dumb-init now with Rocket 0.5
+# But the balenalib images have some issues with there entry.sh
+# See: https://github.com/balena-io-library/base-images/issues/735
+# Lets keep using dumb-init for now, since that is working fine.
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["/start.sh"]
