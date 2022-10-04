@@ -70,13 +70,13 @@
 # - From https://hub.docker.com/r/vaultwarden/web-vault/tags,
 #   click the tag name to view the digest of the image it currently points to.
 # - From the command line:
-#     $ docker pull vaultwarden/web-vault:v{{ vault_version }}
-#     $ docker image inspect --format "{{ '{{' }}.RepoDigests}}" vaultwarden/web-vault:v{{ vault_version }}
+#     $ docker pull vaultwarden/web-vault:{{ vault_version }}
+#     $ docker image inspect --format "{{ '{{' }}.RepoDigests}}" vaultwarden/web-vault:{{ vault_version }}
 #     [vaultwarden/web-vault@{{ vault_image_digest }}]
 #
 # - Conversely, to get the tag name from the digest:
 #     $ docker image inspect --format "{{ '{{' }}.RepoTags}}" vaultwarden/web-vault@{{ vault_image_digest }}
-#     [vaultwarden/web-vault:v{{ vault_version }}]
+#     [vaultwarden/web-vault:{{ vault_version }}]
 #
 FROM vaultwarden/web-vault@{{ vault_image_digest }} as vault
 
@@ -93,12 +93,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME="/root/.cargo" \
     USER="root"
 
-{# {% if "alpine" not in target_file and "buildx" in target_file %}
-# Debian based Buildx builds can use some special apt caching to speedup building.
-# By default Debian based images have some rules to keep docker builds clean, we need to remove this.
-# See: https://hub.docker.com/r/docker/dockerfile
-RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
-{% endif %} #}
 
 # Create CARGO_HOME folder and don't download rust docs
 RUN {{ mount_rust_cache -}} mkdir -pv "${CARGO_HOME}" \
@@ -212,7 +206,6 @@ RUN mkdir /data \
         openssl \
         tzdata \
         curl \
-        dumb-init \
         ca-certificates
 {% else %}
     && apt-get update && apt-get install -y \
@@ -220,12 +213,19 @@ RUN mkdir /data \
     openssl \
     ca-certificates \
     curl \
-    dumb-init \
     libmariadb-dev-compat \
     libpq5 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 {% endif %}
+
+{% if "armv6" in target_file and "alpine" not in target_file %}
+# In the Balena Bullseye images for armv6/rpi-debian there is a missing symlink.
+# This symlink was there in the buster images, and for some reason this is needed.
+# hadolint ignore=DL3059
+RUN ln -v -s /lib/ld-linux-armhf.so.3 /lib/ld-linux.so.3
+
+{% endif -%}
 
 {% if "amd64" not in target_file %}
 # hadolint ignore=DL3059
@@ -251,10 +251,4 @@ COPY docker/start.sh /start.sh
 
 HEALTHCHECK --interval=60s --timeout=10s CMD ["/healthcheck.sh"]
 
-# Configures the startup!
-# We should be able to remove the dumb-init now with Rocket 0.5
-# But the balenalib images have some issues with there entry.sh
-# See: https://github.com/balena-io-library/base-images/issues/735
-# Lets keep using dumb-init for now, since that is working fine.
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["/start.sh"]

@@ -29,14 +29,28 @@ impl Fairing for AppHeaders {
         }
     }
 
-    async fn on_response<'r>(&self, _req: &'r Request<'_>, res: &mut Response<'r>) {
-        res.set_raw_header("Permissions-Policy", "accelerometer=(), ambient-light-sensor=(), autoplay=(), camera=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), sync-xhr=(self \"https://haveibeenpwned.com\" \"https://2fa.directory\"), usb=(), vr=()");
+    async fn on_response<'r>(&self, req: &'r Request<'_>, res: &mut Response<'r>) {
+        res.set_raw_header("Permissions-Policy", "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()");
         res.set_raw_header("Referrer-Policy", "same-origin");
-        res.set_raw_header("X-Frame-Options", "SAMEORIGIN");
         res.set_raw_header("X-Content-Type-Options", "nosniff");
         // Obsolete in modern browsers, unsafe (XS-Leak), and largely replaced by CSP
         res.set_raw_header("X-XSS-Protection", "0");
-        let csp = format!(
+
+        let req_uri_path = req.uri().path();
+
+        // Do not send the Content-Security-Policy (CSP) Header and X-Frame-Options for the *-connector.html files.
+        // This can cause issues when some MFA requests needs to open a popup or page within the clients like WebAuthn, or Duo.
+        // This is the same behaviour as upstream Bitwarden.
+        if !req_uri_path.ends_with("connector.html") {
+            // Check if we are requesting an admin page, if so, allow unsafe-inline for scripts.
+            // TODO: In the future maybe we need to see if we can generate a sha256 hash or have no scripts inline at all.
+            let admin_path = format!("{}/admin", CONFIG.domain_path());
+            let mut script_src = "";
+            if req_uri_path.starts_with(admin_path.as_str()) {
+                script_src = " 'unsafe-inline'";
+            }
+
+            // # Frame Ancestors:
             // Chrome Web Store: https://chrome.google.com/webstore/detail/bitwarden-free-password-m/nngceckbapebfimnlniiiahkandclblb
             // Edge Add-ons: https://microsoftedge.microsoft.com/addons/detail/bitwarden-free-password/jbkfoedolllekgbhcbcoahefnbanhhlh?hl=en-US
             // Firefox Browser Add-ons: https://addons.mozilla.org/en-US/firefox/addon/bitwarden-password-manager/
@@ -302,21 +316,12 @@ impl Fairing for BetterLogging {
 //
 use std::{
     fs::{self, File},
-    io::{Read, Result as IOResult},
+    io::Result as IOResult,
     path::Path,
 };
 
 pub fn file_exists(path: &str) -> bool {
     Path::new(path).exists()
-}
-
-pub fn read_file(path: &str) -> IOResult<Vec<u8>> {
-    let mut contents: Vec<u8> = Vec::new();
-
-    let mut file = File::open(Path::new(path))?;
-    file.read_to_end(&mut contents)?;
-
-    Ok(contents)
 }
 
 pub fn write_file(path: &str, content: &[u8]) -> Result<(), crate::error::Error> {
@@ -334,15 +339,6 @@ pub fn write_file(path: &str, content: &[u8]) -> Result<(), crate::error::Error>
     f.write_all(content)?;
     f.flush()?;
     Ok(())
-}
-
-pub fn read_file_string(path: &str) -> IOResult<String> {
-    let mut contents = String::new();
-
-    let mut file = File::open(Path::new(path))?;
-    file.read_to_string(&mut contents)?;
-
-    Ok(contents)
 }
 
 pub fn delete_file(path: &str) -> IOResult<()> {
