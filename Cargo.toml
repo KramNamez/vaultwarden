@@ -145,6 +145,10 @@ ctrlc = { version = "3.2.3", features = ["termination"] }
 # Mainly used for the musl builds, since the default musl malloc is very slow
 mimalloc = { version = "0.1.30", features = ["secure"], default-features = false, optional = true }
 
+# Used for SSO
+openidconnect = "2.0.1"
+
+
 [patch.crates-io]
 # Using a patched version of multer-rs (Used by Rocket) to fix attachment/send file uploads
 # Issue: https://github.com/dani-garcia/vaultwarden/issues/2644
