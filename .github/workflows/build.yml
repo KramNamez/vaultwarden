@@ -42,8 +42,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       # Checkout the repo
-      - name: Checkout
-        uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b # v3.0.2
+      - name: "Checkout"
+        uses: actions/checkout@93ea575cb5d8a053eaa0ac8fa3b40d7e05a33cc8 # v3.1.0
       # End Checkout the repo
 
 
@@ -60,6 +60,15 @@ jobs:
         if: startsWith( matrix.os, 'ubuntu' )
       # End Install dependencies
 
+      # Determine rust-toolchain version
+      - name: Init Variables
+        id: toolchain
+        shell: bash
+        if: ${{ matrix.channel == 'rust-toolchain' }}
+        run: |
+          RUST_TOOLCHAIN="$(cat rust-toolchain)"
+          echo "RUST_TOOLCHAIN=${RUST_TOOLCHAIN}" | tee -a "${GITHUB_OUTPUT}"
+      # End Determine rust-toolchain version
 
       # Enable Rust Caching
       - uses: Swatinem/rust-cache@842ef286fff290e445b90b4002cc9807c3669641 # v1.3.0
@@ -67,28 +76,26 @@ jobs:
 
 
       # Uses the rust-toolchain file to determine version
-      - name: 'Install ${{ matrix.channel }}-${{ matrix.host-triple }} for target: ${{ matrix.target-triple }}'
-        uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f # v1.0.6
+      - name: "Install rust-toolchain version"
+        uses: dtolnay/rust-toolchain@55c7845fad90d0ae8b2e83715cb900e5e861e8cb # master @ 2022-10-25 - 21:40 GMT+2
+        if: ${{ matrix.channel == 'rust-toolchain' }}
         with:
-          profile: minimal
-          target: ${{ matrix.target-triple }}
+          toolchain: "${{steps.toolchain.outputs.RUST_TOOLCHAIN}}"
           components: clippy, rustfmt
       # End Uses the rust-toolchain file to determine version
 
 
       # Install the MSRV channel to be used
       - name: "Install MSRV version"
-        uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f # v1.0.6
+        uses: dtolnay/rust-toolchain@55c7845fad90d0ae8b2e83715cb900e5e861e8cb # master @ 2022-10-25 - 21:40 GMT+2
         if: ${{ matrix.channel != 'rust-toolchain' }}
         with:
-          profile: minimal
-          override: true
           toolchain: ${{ matrix.version }}
       # End Install the MSRV channel to be used
 
 
       # Enable Rust Caching
-      - uses: Swatinem/rust-cache@6720f05bc48b77f96918929a9019fb2203ff71f8 # v2.0.0
+      - uses: Swatinem/rust-cache@b5ec9edd911d3bf82c74038b0a28791e0aa24d6f # v2.0.2
       # End Enable Rust Caching
 
 
@@ -102,66 +109,99 @@ jobs:
 
       # Run cargo tests (In release mode to speed up future builds)
       # First test all features together, afterwards test them separately.
-      - name: "`cargo test --release --features ${{ join(matrix.features, ',') }} --target ${{ matrix.target-triple }}`"
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: test
-          args: --release --features ${{ join(matrix.features, ',') }} --target ${{ matrix.target-triple }}
-      # Test single features
-      # 0: sqlite
-      - name: "`cargo test --release --features ${{ matrix.features[0] }} --target ${{ matrix.target-triple }}`"
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: test
-          args: --release --features ${{ matrix.features[0] }} --target ${{ matrix.target-triple }}
-        if: ${{ matrix.features[0] != '' }}
-      # 1: mysql
-      - name: "`cargo test --release --features ${{ matrix.features[1] }} --target ${{ matrix.target-triple }}`"
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: test
-          args: --release --features ${{ matrix.features[1] }} --target ${{ matrix.target-triple }}
-        if: ${{ matrix.features[1] != '' }}
-      # 2: postgresql
-      - name: "`cargo test --release --features ${{ matrix.features[2] }} --target ${{ matrix.target-triple }}`"
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: test
-          args: --release --features ${{ matrix.features[2] }} --target ${{ matrix.target-triple }}
-        if: ${{ matrix.features[2] != '' }}
+      - name: "test features: sqlite,mysql,postgresql,enable_mimalloc"
+        id: test_sqlite_mysql_postgresql_mimalloc
+        if: $${{ always() }}
+        run: |
+          cargo test --release --features sqlite,mysql,postgresql,enable_mimalloc
+
+      - name: "test features: sqlite,mysql,postgresql"
+        id: test_sqlite_mysql_postgresql
+        if: $${{ always() }}
+        run: |
+          cargo test --release --features sqlite,mysql,postgresql
+
+      - name: "test features: sqlite"
+        id: test_sqlite
+        if: $${{ always() }}
+        run: |
+          cargo test --release --features sqlite
+
+      - name: "test features: mysql"
+        id: test_mysql
+        if: $${{ always() }}
+        run: |
+          cargo test --release --features mysql
+
+      - name: "test features: postgresql"
+        id: test_postgresql
+        if: $${{ always() }}
+        run: |
+          cargo test --release --features postgresql
       # End Run cargo tests
 
 
       # Run cargo clippy, and fail on warnings (In release mode to speed up future builds)
-      - name: "`cargo clippy --release --features ${{ join(matrix.features, ',') }} --target ${{ matrix.target-triple }}`"
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: clippy
-          args: --release --features ${{ join(matrix.features, ',') }} --target ${{ matrix.target-triple }} -- -D warnings
+      - name: "clippy features: sqlite,mysql,postgresql,enable_mimalloc"
+        id: clippy
+        if: ${{ always() && matrix.channel == 'rust-toolchain' }}
+        run: |
+          cargo clippy --release --features sqlite,mysql,postgresql,enable_mimalloc -- -D warnings
       # End Run cargo clippy
 
 
-      # Run cargo fmt
-      - name: '`cargo fmt`'
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: fmt
-          args: --all -- --check
+      # Run cargo fmt (Only run on rust-toolchain defined version)
+      - name: "check formatting"
+        id: formatting
+        if: ${{ always() && matrix.channel == 'rust-toolchain' }}
+        run: |
+          cargo fmt --all -- --check
       # End Run cargo fmt
 
 
-      # Build the binary
-      - name: "`cargo build --release --features ${{ join(matrix.features, ',') }} --target ${{ matrix.target-triple }}`"
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
-        with:
-          command: build
-          args: --release --features ${{ join(matrix.features, ',') }} --target ${{ matrix.target-triple }}
+      # Check for any previous failures, if there are stop, else continue.
+      # This is useful so all test/clippy/fmt actions are done, and they can all be addressed
+      - name: "Some checks failed"
+        if: ${{ failure() }}
+        run: |
+          echo "### :x: Checks Failed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "|Job|Status|" >> $GITHUB_STEP_SUMMARY
+          echo "|---|------|" >> $GITHUB_STEP_SUMMARY
+          echo "|test (sqlite,mysql,postgresql,enable_mimalloc)|${{ steps.test_sqlite_mysql_postgresql_mimalloc.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "|test (sqlite,mysql,postgresql)|${{ steps.test_sqlite_mysql_postgresql.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "|test (sqlite)|${{ steps.test_sqlite.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "|test (mysql)|${{ steps.test_mysql.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "|test (postgresql)|${{ steps.test_postgresql.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "|clippy (sqlite,mysql,postgresql,enable_mimalloc)|${{ steps.clippy.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "|fmt|${{ steps.formatting.outcome }}|" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the failed jobs and fix where needed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          exit 1
+
+
+      # Check for any previous failures, if there are stop, else continue.
+      # This is useful so all test/clippy/fmt actions are done, and they can all be addressed
+      - name: "All checks passed"
+        if: ${{ success() }}
+        run: |
+          echo "### :tada: Checks Passed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+
+      # Build the binary to upload to the artifacts
+      - name: "build features: sqlite,mysql,postgresql"
+        if: ${{ matrix.channel == 'rust-toolchain' }}
+        run: |
+          cargo build --release --features sqlite,mysql,postgresql
       # End Build the binary
 
 
       # Upload artifact to Github Actions
-      - name: Upload artifact
-        uses: actions/upload-artifact@6673cd052c4cd6fcf4b4e6e60ea986c889389535 # v3.0.0
+      - name: "Upload artifact"
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
+        if: ${{ matrix.channel == 'rust-toolchain' }}
         with:
           name: vaultwarden
           path: target/release/vaultwarden

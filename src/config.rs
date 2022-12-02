@@ -1,6 +1,7 @@
 use std::process::exit;
 use std::sync::RwLock;
 
+use job_scheduler_ng::Schedule;
 use once_cell::sync::Lazy;
 use reqwest::Url;
 
@@ -370,6 +371,9 @@ make_config! {
         /// Emergency request timeout schedule |> Cron schedule of the job that grants emergency access requests that have met the required wait time.
         /// Defaults to hourly. Set blank to disable this job.
         emergency_request_timeout_schedule:   String, false,  def,    "0 5 * * * *".to_string();
+        /// Event cleanup schedule |> Cron schedule of the job that cleans old events from the event table.
+        /// Defaults to daily. Set blank to disable this job.
+        event_cleanup_schedule:   String, false,  def,    "0 10 0 * * *".to_string();
     },
 
     /// General settings
@@ -424,10 +428,12 @@ make_config! {
         /// If signups require email verification, limit how many emails are automatically sent when login is attempted (0 means no limit)
         signups_verify_resend_limit: u32, true, def,    6;
         /// Email domain whitelist |> Allow signups only from this list of comma-separated domains, even when signups are otherwise disabled
-        signups_domains_whitelist: String, true, def,   "".to_string();
+        signups_domains_whitelist: String, true, def,   String::new();
+        /// Enable event logging |> Enables event logging for organizations.
+        org_events_enabled:     bool,   false,  def,    false;
         /// Org creation users |> Allow org creation only by this list of comma-separated user emails.
         /// Blank or 'all' means all users can create orgs; 'none' means no users can create orgs.
-        org_creation_users:     String, true,   def,    "".to_string();
+        org_creation_users:     String, true,   def,    String::new();
         /// Allow invitations |> Controls whether users can be invited by organization admins, even when signups are otherwise disabled
         invitations_allowed:    bool,   true,   def,    true;
         /// Invitation token expiration time (in hours) |> The number of hours after which an organization invite token, emergency access invite token,
@@ -450,6 +456,9 @@ make_config! {
 
         /// Invitation organization name |> Name shown in the invitation emails that don't come from a specific organization
         invitation_org_name:    String, true,   def,    "Vaultwarden".to_string();
+
+        /// Events days retain |> Number of days to retain events stored in the database. If unset, events are kept indefently.
+        events_days_retain:     i64,    false,   option;
     },
 
     /// Advanced settings
@@ -529,10 +538,10 @@ make_config! {
         database_max_conns:     u32,    false,  def,    10;
 
         /// Database connection init |> SQL statements to run when creating a new database connection, mainly useful for connection-scoped pragmas. If empty, a database-specific default is used.
-        database_conn_init:     String, false,  def,    "".to_string();
+        database_conn_init:     String, false,  def,    String::new();
 
         /// Bypass admin page security (Know the risks!) |> Disables the Admin Token for the admin page so you may use your own auth in-front
-        disable_admin_token:    bool,   true,   def,    false;
+        disable_admin_token:    bool,   false,  def,    false;
 
         /// Allowed iframe ancestors (Know the risks!) |> Allows other domains to embed the web vault into an iframe, useful for embedding into secure intranets
         allowed_iframe_ancestors: String, true, def,    String::new();
@@ -542,9 +551,9 @@ make_config! {
         /// Max burst size for login requests |> Allow a burst of requests of up to this size, while maintaining the average indicated by `login_ratelimit_seconds`. Note that this applies to both the login and the 2FA, so it's recommended to allow a burst size of at least 2
         login_ratelimit_max_burst:     u32, false, def, 10;
 
-        /// Seconds between admin requests |> Number of seconds, on average, between admin requests from the same IP address before rate limiting kicks in
+        /// Seconds between admin login requests |> Number of seconds, on average, between admin requests from the same IP address before rate limiting kicks in
         admin_ratelimit_seconds:       u64, false, def, 300;
-        /// Max burst size for login requests |> Allow a burst of requests of up to this size, while maintaining the average indicated by `admin_ratelimit_seconds`
+        /// Max burst size for admin login requests |> Allow a burst of requests of up to this size, while maintaining the average indicated by `admin_ratelimit_seconds`
         admin_ratelimit_max_burst:     u32, false, def, 3;
     },
 
@@ -602,6 +611,10 @@ make_config! {
         smtp_timeout:                  u64,    true,   def,     15;
         /// Server name sent during HELO |> By default this value should be is on the machine's hostname, but might need to be changed in case it trips some anti-spam filters
         helo_name:                     String, true,   option;
+        /// Embed images as email attachments.
+        smtp_embed_images:             bool, true, def, true;
+        /// Internal
+        _smtp_img_src:                 String, false, gen, |c| generate_smtp_img_src(c.smtp_embed_images, &c.domain);
         /// Enable SMTP debugging (Know the risks!) |> DANGEROUS: Enabling this will output very detailed SMTP messages. This could contain sensitive information like passwords and usernames! Only enable this during troubleshooting!
         smtp_debug:                    bool,   false,  def,     false;
         /// Accept Invalid Certs (Know the risks!) |> DANGEROUS: Allow invalid certificates. This option introduces significant vulnerabilities to man-in-the-middle attacks!
@@ -625,7 +638,15 @@ make_config! {
 
 fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
     // Validate connection URL is valid and DB feature is enabled
-    DbConnType::from_url(&cfg.database_url)?;
+    let url = &cfg.database_url;
+    if DbConnType::from_url(url)? == DbConnType::sqlite && url.contains('/') {
+        let path = std::path::Path::new(&url);
+        if let Some(parent) = path.parent() {
+            if !parent.is_dir() {
+                err!(format!("SQLite database directory `{}` does not exist or is not a directory", parent.display()));
+            }
+        }
+    }
 
     let limit = 256;
     if cfg.database_max_conns < 1 || cfg.database_max_conns > limit {
@@ -733,6 +754,35 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
         err!("`INVITATION_EXPIRATION_HOURS` has a minimum duration of 1 hour")
     }
 
+    // Validate schedule crontab format
+    if !cfg.send_purge_schedule.is_empty() && cfg.send_purge_schedule.parse::<Schedule>().is_err() {
+        err!("`SEND_PURGE_SCHEDULE` is not a valid cron expression")
+    }
+
+    if !cfg.trash_purge_schedule.is_empty() && cfg.trash_purge_schedule.parse::<Schedule>().is_err() {
+        err!("`TRASH_PURGE_SCHEDULE` is not a valid cron expression")
+    }
+
+    if !cfg.incomplete_2fa_schedule.is_empty() && cfg.incomplete_2fa_schedule.parse::<Schedule>().is_err() {
+        err!("`INCOMPLETE_2FA_SCHEDULE` is not a valid cron expression")
+    }
+
+    if !cfg.emergency_notification_reminder_schedule.is_empty()
+        && cfg.emergency_notification_reminder_schedule.parse::<Schedule>().is_err()
+    {
+        err!("`EMERGENCY_NOTIFICATION_REMINDER_SCHEDULE` is not a valid cron expression")
+    }
+
+    if !cfg.emergency_request_timeout_schedule.is_empty()
+        && cfg.emergency_request_timeout_schedule.parse::<Schedule>().is_err()
+    {
+        err!("`EMERGENCY_REQUEST_TIMEOUT_SCHEDULE` is not a valid cron expression")
+    }
+
+    if !cfg.event_cleanup_schedule.is_empty() && cfg.event_cleanup_schedule.parse::<Schedule>().is_err() {
+        err!("`EVENT_CLEANUP_SCHEDULE` is not a valid cron expression")
+    }
+
     Ok(())
 }
 
@@ -759,11 +809,19 @@ fn extract_url_path(url: &str) -> String {
     }
 }
 
+fn generate_smtp_img_src(embed_images: bool, domain: &str) -> String {
+    if embed_images {
+        "cid:".to_string()
+    } else {
+        format!("{domain}/vw_static/")
+    }
+}
+
 /// Generate the correct URL for the icon service.
 /// This will be used within icons.rs to call the external icon service.
 fn generate_icon_service_url(icon_service: &str) -> String {
     match icon_service {
-        "internal" => "".to_string(),
+        "internal" => String::new(),
         "bitwarden" => "https://icons.bitwarden.net/{}/icon.png".to_string(),
         "duckduckgo" => "https://icons.duckduckgo.com/ip3/{}.ico".to_string(),
         "google" => "https://www.google.com/s2/favicons?domain={}&sz=32".to_string(),
@@ -777,7 +835,7 @@ fn generate_icon_service_csp(icon_service: &str, icon_service_url: &str) -> Stri
     // Everything up until the first '{' should be fixed and can be used as an CSP string.
     let csp_string = match icon_service_url.split_once('{') {
         Some((c, _)) => c.to_string(),
-        None => "".to_string(),
+        None => String::new(),
     };
 
     // Because Google does a second redirect to there gstatic.com domain, we need to add an extra csp string.
@@ -948,8 +1006,7 @@ impl Config {
         if let Some(akey) = self._duo_akey() {
             akey
         } else {
-            let akey = crate::crypto::get_random_64();
-            let akey_s = data_encoding::BASE64.encode(&akey);
+            let akey_s = crate::crypto::encode_random_bytes::<64>(data_encoding::BASE64);
 
             // Save the new value
             let builder = ConfigBuilder {
@@ -1085,7 +1142,7 @@ fn case_helper<'reg, 'rc>(
     let value = param.value().clone();
 
     if h.params().iter().skip(1).any(|x| x.value() == &value) {
-        h.template().map(|t| t.render(r, ctx, rc, out)).unwrap_or(Ok(()))
+        h.template().map(|t| t.render(r, ctx, rc, out)).unwrap_or_else(|| Ok(()))
     } else {
         Ok(())
     }
