@@ -12,9 +12,13 @@
     clippy::equatable_if_let,
     clippy::float_cmp_const,
     clippy::inefficient_to_string,
+    clippy::iter_on_empty_collections,
+    clippy::iter_on_single_items,
     clippy::linkedlist,
     clippy::macro_use_imports,
     clippy::manual_assert,
+    clippy::manual_instant_elapsed,
+    clippy::manual_string_new,
     clippy::match_wildcard_for_single_variants,
     clippy::mem_forget,
     clippy::string_add_assign,
@@ -30,7 +34,7 @@
 // The more key/value pairs there are the more recursion occurs.
 // We want to keep this as low as possible, but not higher then 128.
 // If you go above 128 it will cause rust-analyzer to fail,
-#![recursion_limit = "87"]
+#![recursion_limit = "94"]
 
 // When enabled use MiMalloc as malloc instead of the default malloc
 #[cfg(feature = "enable_mimalloc")]
@@ -108,7 +112,7 @@ async fn main() -> Result<(), Error> {
 
     let pool = create_db_pool().await;
     schedule_jobs(pool.clone()).await;
-    crate::db::models::TwoFactor::migrate_u2f_to_webauthn(&pool.get().await.unwrap()).await.unwrap();
+    crate::db::models::TwoFactor::migrate_u2f_to_webauthn(&mut pool.get().await.unwrap()).await.unwrap();
 
     launch_rocket(pool, extra_debug).await // Blocks until program termination.
 }
@@ -426,11 +430,13 @@ async fn launch_rocket(pool: db::DbPool, extra_debug: bool) -> Result<(), Error>
         .mount([basepath, "/"].concat(), api::web_routes())
         .mount([basepath, "/api"].concat(), api::core_routes())
         .mount([basepath, "/admin"].concat(), api::admin_routes())
+        .mount([basepath, "/events"].concat(), api::core_events_routes())
         .mount([basepath, "/identity"].concat(), api::identity_routes())
         .mount([basepath, "/icons"].concat(), api::icons_routes())
         .mount([basepath, "/notifications"].concat(), api::notifications_routes())
         .register([basepath, "/"].concat(), api::web_catchers())
         .register([basepath, "/api"].concat(), api::core_catchers())
+        .register([basepath, "/admin"].concat(), api::admin_catchers())
         .manage(pool)
         .manage(api::start_notification_server())
         .attach(util::AppHeaders())
@@ -504,6 +510,16 @@ async fn schedule_jobs(pool: db::DbPool) {
             if !CONFIG.emergency_notification_reminder_schedule().is_empty() {
                 sched.add(Job::new(CONFIG.emergency_notification_reminder_schedule().parse().unwrap(), || {
                     runtime.spawn(api::emergency_notification_reminder_job(pool.clone()));
+                }));
+            }
+
+            // Cleanup the event table of records x days old.
+            if CONFIG.org_events_enabled()
+                && !CONFIG.event_cleanup_schedule().is_empty()
+                && CONFIG.events_days_retain().is_some()
+            {
+                sched.add(Job::new(CONFIG.event_cleanup_schedule().parse().unwrap(), || {
+                    runtime.spawn(api::event_cleanup_job(pool.clone()));
                 }));
             }
 

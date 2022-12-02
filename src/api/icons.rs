@@ -262,17 +262,8 @@ use cached::proc_macro::cached;
 #[cached(key = "String", convert = r#"{ domain.to_string() }"#, size = 16, time = 60)]
 #[allow(clippy::unused_async)] // This is needed because cached causes a false-positive here.
 async fn is_domain_blacklisted(domain: &str) -> bool {
-    if CONFIG.icon_blacklist_non_global_ips() {
-        if let Ok(s) = lookup_host((domain, 0)).await {
-            for addr in s {
-                if !is_global(addr.ip()) {
-                    debug!("IP {} for domain '{}' is not a global IP!", addr.ip(), domain);
-                    return true;
-                }
-            }
-        }
-    }
-
+    // First check the blacklist regex if there is a match.
+    // This prevents the blocked domain(s) from being leaked via a DNS lookup.
     if let Some(blacklist) = CONFIG.icon_blacklist_regex() {
         // Use the pre-generate Regex stored in a Lazy HashMap if there's one, else generate it.
         let is_match = if let Some(regex) = ICON_BLACKLIST_REGEX.get(&blacklist) {
@@ -297,6 +288,18 @@ async fn is_domain_blacklisted(domain: &str) -> bool {
             return true;
         }
     }
+
+    if CONFIG.icon_blacklist_non_global_ips() {
+        if let Ok(s) = lookup_host((domain, 0)).await {
+            for addr in s {
+                if !is_global(addr.ip()) {
+                    debug!("IP {} for domain '{}' is not a global IP!", addr.ip(), domain);
+                    return true;
+                }
+            }
+        }
+    }
+
     false
 }
 
@@ -520,7 +523,7 @@ async fn get_icon_url(domain: &str) -> Result<IconUrlResult, Error> {
 
     // Create the iconlist
     let mut iconlist: Vec<Icon> = Vec::new();
-    let mut referer = String::from("");
+    let mut referer = String::new();
 
     if let Ok(content) = resp {
         // Extract the URL from the respose in case redirects occured (like @ gitlab.com)

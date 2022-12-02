@@ -25,13 +25,13 @@ static JWT_ADMIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|admin", CONFIG.
 static JWT_SEND_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|send", CONFIG.domain_origin()));
 
 static PRIVATE_RSA_KEY_VEC: Lazy<Vec<u8>> = Lazy::new(|| {
-    std::fs::read(&CONFIG.private_rsa_key()).unwrap_or_else(|e| panic!("Error loading private RSA Key.\n{}", e))
+    std::fs::read(CONFIG.private_rsa_key()).unwrap_or_else(|e| panic!("Error loading private RSA Key.\n{}", e))
 });
 static PRIVATE_RSA_KEY: Lazy<EncodingKey> = Lazy::new(|| {
     EncodingKey::from_rsa_pem(&PRIVATE_RSA_KEY_VEC).unwrap_or_else(|e| panic!("Error decoding private RSA Key.\n{}", e))
 });
 static PUBLIC_RSA_KEY_VEC: Lazy<Vec<u8>> = Lazy::new(|| {
-    std::fs::read(&CONFIG.public_rsa_key()).unwrap_or_else(|e| panic!("Error loading public RSA Key.\n{}", e))
+    std::fs::read(CONFIG.public_rsa_key()).unwrap_or_else(|e| panic!("Error loading public RSA Key.\n{}", e))
 });
 static PUBLIC_RSA_KEY: Lazy<DecodingKey> = Lazy::new(|| {
     DecodingKey::from_rsa_pem(&PUBLIC_RSA_KEY_VEC).unwrap_or_else(|e| panic!("Error decoding public RSA Key.\n{}", e))
@@ -348,17 +348,17 @@ impl<'r> FromRequest<'r> for Headers {
         let device_uuid = claims.device;
         let user_uuid = claims.sub;
 
-        let conn = match DbConn::from_request(request).await {
+        let mut conn = match DbConn::from_request(request).await {
             Outcome::Success(conn) => conn,
             _ => err_handler!("Error getting DB"),
         };
 
-        let device = match Device::find_by_uuid_and_user(&device_uuid, &user_uuid, &conn).await {
+        let device = match Device::find_by_uuid_and_user(&device_uuid, &user_uuid, &mut conn).await {
             Some(device) => device,
             None => err_handler!("Invalid device id"),
         };
 
-        let user = match User::find_by_uuid(&user_uuid, &conn).await {
+        let user = match User::find_by_uuid(&user_uuid, &mut conn).await {
             Some(user) => user,
             None => err_handler!("Device has no user associated"),
         };
@@ -380,7 +380,7 @@ impl<'r> FromRequest<'r> for Headers {
                     // This prevents checking this stamp exception for new requests.
                     let mut user = user;
                     user.reset_stamp_exception();
-                    if let Err(e) = user.save(&conn).await {
+                    if let Err(e) = user.save(&mut conn).await {
                         error!("Error updating user: {:#?}", e);
                     }
                     err_handler!("Stamp exception is expired")
@@ -438,13 +438,13 @@ impl<'r> FromRequest<'r> for OrgHeaders {
         let headers = try_outcome!(Headers::from_request(request).await);
         match get_org_id(request) {
             Some(org_id) => {
-                let conn = match DbConn::from_request(request).await {
+                let mut conn = match DbConn::from_request(request).await {
                     Outcome::Success(conn) => conn,
                     _ => err_handler!("Error getting DB"),
                 };
 
                 let user = headers.user;
-                let org_user = match UserOrganization::find_by_user_and_org(&user.uuid, &org_id, &conn).await {
+                let org_user = match UserOrganization::find_by_user_and_org(&user.uuid, &org_id, &mut conn).await {
                     Some(user) => {
                         if user.status == UserOrgStatus::Confirmed as i32 {
                             user
@@ -481,6 +481,7 @@ pub struct AdminHeaders {
     pub device: Device,
     pub user: User,
     pub org_user_type: UserOrgType,
+    pub client_version: Option<String>,
 }
 
 #[rocket::async_trait]
@@ -489,12 +490,14 @@ impl<'r> FromRequest<'r> for AdminHeaders {
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let headers = try_outcome!(OrgHeaders::from_request(request).await);
+        let client_version = request.headers().get_one("Bitwarden-Client-Version").map(String::from);
         if headers.org_user_type >= UserOrgType::Admin {
             Outcome::Success(Self {
                 host: headers.host,
                 device: headers.device,
                 user: headers.user,
                 org_user_type: headers.org_user_type,
+                client_version,
             })
         } else {
             err_handler!("You need to be Admin or Owner to call this endpoint")
@@ -550,14 +553,18 @@ impl<'r> FromRequest<'r> for ManagerHeaders {
         if headers.org_user_type >= UserOrgType::Manager {
             match get_col_id(request) {
                 Some(col_id) => {
-                    let conn = match DbConn::from_request(request).await {
+                    let mut conn = match DbConn::from_request(request).await {
                         Outcome::Success(conn) => conn,
                         _ => err_handler!("Error getting DB"),
                     };
 
                     if !headers.org_user.has_full_access() {
-                        match CollectionUser::find_by_collection_and_user(&col_id, &headers.org_user.user_uuid, &conn)
-                            .await
+                        match CollectionUser::find_by_collection_and_user(
+                            &col_id,
+                            &headers.org_user.user_uuid,
+                            &mut conn,
+                        )
+                        .await
                         {
                             Some(_) => (),
                             None => err_handler!("The current user isn't a manager for this collection"),

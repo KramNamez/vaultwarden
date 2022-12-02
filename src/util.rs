@@ -83,7 +83,6 @@ impl Fairing for AppHeaders {
                   https://app.simplelogin.io/api/ \
                   https://app.anonaddy.com/api/ \
                   https://api.fastmail.com/ \
-                  https://quack.duckduckgo.com/api/email/ \
                   ;\
                 ",
                 icon_service_csp = CONFIG._icon_service_csp(),
@@ -109,7 +108,7 @@ impl Cors {
     fn get_header(headers: &HeaderMap<'_>, name: &str) -> String {
         match headers.get_one(name) {
             Some(h) => h.to_string(),
-            _ => "".to_string(),
+            _ => String::new(),
         }
     }
 
@@ -457,10 +456,13 @@ pub fn get_env_bool(key: &str) -> Option<bool> {
 
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 
+// Format used by Bitwarden API
+const DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+
 /// Formats a UTC-offset `NaiveDateTime` in the format used by Bitwarden API
 /// responses with "date" fields (`CreationDate`, `RevisionDate`, etc.).
 pub fn format_date(dt: &NaiveDateTime) -> String {
-    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+    dt.format(DATETIME_FORMAT).to_string()
 }
 
 /// Formats a `DateTime<Local>` using the specified format string.
@@ -499,6 +501,10 @@ pub fn format_datetime_http(dt: &DateTime<Local>) -> String {
     // HACK: HTTP expects the date to always be GMT (UTC) rather than giving an
     // offset (which would always be 0 in UTC anyway)
     expiry_time.to_rfc2822().replace("+0000", "GMT")
+}
+
+pub fn parse_date(date: &str) -> NaiveDateTime {
+    NaiveDateTime::parse_from_str(date, DATETIME_FORMAT).unwrap()
 }
 
 //
@@ -621,9 +627,9 @@ fn _process_key(key: &str) -> String {
 // Retry methods
 //
 
-pub fn retry<F, T, E>(func: F, max_tries: u32) -> Result<T, E>
+pub fn retry<F, T, E>(mut func: F, max_tries: u32) -> Result<T, E>
 where
-    F: Fn() -> Result<T, E>,
+    F: FnMut() -> Result<T, E>,
 {
     let mut tries = 0;
 
@@ -642,9 +648,9 @@ where
     }
 }
 
-pub async fn retry_db<F, T, E>(func: F, max_tries: u32) -> Result<T, E>
+pub async fn retry_db<F, T, E>(mut func: F, max_tries: u32) -> Result<T, E>
 where
-    F: Fn() -> Result<T, E>,
+    F: FnMut() -> Result<T, E>,
     E: std::error::Error,
 {
     let mut tries = 0;
